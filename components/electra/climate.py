@@ -28,7 +28,7 @@ async def to_code(config):
 @automation.register_action(
     "electra.sync_state",
     SyncStateAction,
-    cv.Schema(
+    automation.maybe_simple_id(
         {
             cv.Required(CONF_ID): cv.use_id(ElectraClimate),
         }

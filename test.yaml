@@ -1,0 +1,48 @@
+esphome:
+  name: test-electra-ac
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+wifi:
+  ssid: "Mock_WiFi"
+  password: "Mock_Password"
+
+api:
+  actions:
+    - action: sync_electra_state
+      then:
+        - electra.sync_state: electra_ac
+
+external_components:
+  - source: components
+
+sensor:
+  - platform: template
+    id: room_temperature
+
+remote_transmitter:
+  pin: GPIO4
+  carrier_duty_percent: 50%
+  id: ir_transmitter
+
+remote_receiver:
+  pin:
+    number: GPIO5
+    inverted: true
+    mode:
+      input: true
+      pullup: true
+  tolerance: 50%
+  id: ir_receiver
+
+climate:
+  - platform: electra
+    name: "Test Electra AC"
+    id: electra_ac
+    transmitter_id: ir_transmitter
+    receiver_id: ir_receiver
+    supports_off_command: true
+    sensor: room_temperature

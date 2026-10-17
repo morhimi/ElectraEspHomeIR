@@ -23,10 +23,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install esphome
 
-      - name: Validate example configuration
+      - name: Validate ESPHome configuration
         run: |
-          # Test example.yaml using local external_components path
-          sed -i 's|url: https://github.com/omerstr/ElectraEspHomeIR|path: components|g' example.yaml
-          sed -i '/type: git/d' example.yaml
-          sed -i '/ref: main/d' example.yaml
-          esphome config example.yaml
+          esphome config test.yaml
