@@ -4,43 +4,47 @@
 namespace esphome {
 namespace electra {
 
-// run time variables, no need to save state in reboot
 static const char *const TAG = "electra.climate";
-climate::ClimateMode active_mode_;
 
 void ElectraClimate::setup() {
   climate_ir::ClimateIR::setup();
-  active_mode_ = this->mode;
+  this->active_mode_ = this->mode;
+  if (this->mode != climate::CLIMATE_MODE_OFF) {
+    this->last_on_mode_ = this->mode;
+  }
+}
+
+void ElectraClimate::dump_config() {
+  climate_ir::ClimateIR::dump_config();
+  ESP_LOGCONFIG(TAG, "Electra Climate:");
+  ESP_LOGCONFIG(TAG, "  Supports Off Command: %s", YESNO(this->supports_off_));
 }
 
 void ElectraClimate::control(const climate::ClimateCall &call) {
   climate_ir::ClimateIR::control(call);
-  active_mode_ = this->mode;
-}
-
-void ElectraClimate::setOffSupport(bool supports){
-  if (supports){
-    this->supportsOff = true;
-  }
-  else {
-    this->supportsOff = false;
+  this->active_mode_ = this->mode;
+  if (this->mode != climate::CLIMATE_MODE_OFF) {
+    this->last_on_mode_ = this->mode;
   }
 }
 
-void ElectraClimate::sync_state(){
-  if (this->mode == climate::CLIMATE_MODE_OFF){
-    this->mode = climate::CLIMATE_MODE_COOL;
-  }
-  else {
+void ElectraClimate::sync_state() {
+  if (this->mode == climate::CLIMATE_MODE_OFF) {
+    this->mode = (this->last_on_mode_ != climate::CLIMATE_MODE_OFF) ? this->last_on_mode_ : climate::CLIMATE_MODE_COOL;
+  } else {
+    this->last_on_mode_ = this->mode;
     this->mode = climate::CLIMATE_MODE_OFF;
   }
 
+  this->active_mode_ = this->mode;
   this->publish_state();
 }
 
 void ElectraClimate::transmit_state() {
-  if (active_mode_ == climate::CLIMATE_MODE_OFF && this->mode == climate::CLIMATE_MODE_OFF) return;
-  ElectraCode code = encode_electra();
+  if (this->active_mode_ == climate::CLIMATE_MODE_OFF && this->mode == climate::CLIMATE_MODE_OFF)
+    return;
+
+  ElectraCode code = this->encode_electra();
   this->last_transmit_time_ = millis();
   auto transmit = this->transmitter_->transmit();
   auto data = transmit.get_data();
@@ -55,37 +59,28 @@ void ElectraClimate::transmit_state() {
     bool is_next_space = true;
 
     // Data
-    for (int j = ELECTRA_NUM_BITS - 1; j>=0; j--){
+    for (int j = ELECTRA_NUM_BITS - 1; j >= 0; j--) {
       uint8_t bit = (code.num >> j) & 1;
 
-      // if current index is SPACE
+      // If current index is SPACE
       if (is_next_space) {
-        // one is one unit low, then one unit up
-        // since we're pointing at SPACE, we should increase it by a unit
-        // then add another MARK unit
         if (bit == 1) {
           data->space(next_value + ELECTRA_TIME_UNIT);
           next_value = ELECTRA_TIME_UNIT;
           is_next_space = false;
-
         } else {
-          // we need a MARK unit, then SPACE unit
           data->space(next_value);
           data->mark(ELECTRA_TIME_UNIT);
           next_value = ELECTRA_TIME_UNIT;
           is_next_space = true;
         }
-
       } else {
-        // current index is MARK
-          
-        // one is one unit low, then one unit up
+        // Current index is MARK
         if (bit == 1) {
           data->mark(next_value);
           data->space(ELECTRA_TIME_UNIT);
           next_value = ELECTRA_TIME_UNIT;
           is_next_space = false;
-
         } else {
           data->mark(next_value + ELECTRA_TIME_UNIT);
           next_value = ELECTRA_TIME_UNIT;
@@ -102,26 +97,28 @@ void ElectraClimate::transmit_state() {
   data->mark(4 * ELECTRA_TIME_UNIT);
 
   transmit.perform();
-} // end transmit state
+}
 
-ElectraCode ElectraClimate::encode_electra(){
-  ElectraCode code = { 0 };
+ElectraCode ElectraClimate::encode_electra() {
+  ElectraCode code = {0};
   code.ones1 = 1;
 
-  //set swing
-  if (this->swing_mode) {
-    code.swing = 1;  // Swing ON
+  // Set swing
+  if (this->swing_mode == climate::CLIMATE_SWING_VERTICAL) {
+    code.swing = 1;
   } else {
-    code.swing = 0;  // Swing OFF
+    code.swing = 0;
   }
-  //set sleep mode
+
+  // Set sleep preset
   if (this->preset == climate::CLIMATE_PRESET_SLEEP) {
     code.sleep = 1;
   } else {
     code.sleep = 0;
   }
-  //set fan mode
-  switch (this->fan_mode.value()) {
+
+  // Set fan mode
+  switch (this->fan_mode.value_or(climate::CLIMATE_FAN_AUTO)) {
     case climate::CLIMATE_FAN_LOW:
       code.fan = IRElectraFan::IRElectraFanLow;
       break;
@@ -131,72 +128,79 @@ ElectraCode ElectraClimate::encode_electra(){
     case climate::CLIMATE_FAN_HIGH:
       code.fan = IRElectraFan::IRElectraFanHigh;
       break;
-    case climate::CLIMATE_FAN_AUTO:  //Added this for Auto Fan Mode
+    case climate::CLIMATE_FAN_AUTO:
+    default:
       code.fan = IRElectraFan::IRElectraFanAuto;
       break;
-    default:
-      code.fan = IRElectraFan::IRElectraFanAuto;// original IRElectraFanAuto
-      break;
   }
-  //set climate mode
+
+  // Set climate mode & power bit
   switch (this->mode) {
     case climate::CLIMATE_MODE_COOL:
       code.mode = IRElectraMode::IRElectraModeCool;
-      code.power = active_mode_ == climate::CLIMATE_MODE_OFF ? 1 : 0;
+      code.power = (this->active_mode_ == climate::CLIMATE_MODE_OFF) ? 1 : 0;
       break;
     case climate::CLIMATE_MODE_HEAT:
       code.mode = IRElectraMode::IRElectraModeHeat;
-      code.power = active_mode_ == climate::CLIMATE_MODE_OFF ? 1 : 0;
+      code.power = (this->active_mode_ == climate::CLIMATE_MODE_OFF) ? 1 : 0;
       break;
     case climate::CLIMATE_MODE_FAN_ONLY:
       code.mode = IRElectraMode::IRElectraModeFan;
-      code.power = active_mode_ == climate::CLIMATE_MODE_OFF ? 1 : 0;
+      code.power = (this->active_mode_ == climate::CLIMATE_MODE_OFF) ? 1 : 0;
       break;
     case climate::CLIMATE_MODE_HEAT_COOL:
       code.mode = IRElectraMode::IRElectraModeAuto;
-      code.power = active_mode_ == climate::CLIMATE_MODE_OFF ? 1 : 0;
+      code.power = (this->active_mode_ == climate::CLIMATE_MODE_OFF) ? 1 : 0;
       break;
     case climate::CLIMATE_MODE_DRY:
       code.mode = IRElectraMode::IRElectraModeDry;
-      code.power = active_mode_ == climate::CLIMATE_MODE_OFF ? 1 : 0;
+      code.power = (this->active_mode_ == climate::CLIMATE_MODE_OFF) ? 1 : 0;
       break;
     case climate::CLIMATE_MODE_OFF:
     default:
-      if (supportsOff){
+      if (this->supports_off_) {
         code.mode = IRElectraMode::IRElectraModeOff;
         code.power = 1;
-      }else {
+      } else {
         code.mode = IRElectraMode::IRElectraModeCool;
         code.power = 1;
       }
       break;
   }
-  //set temp
+
+  // Set temperature
   auto temp = std::lround(clamp(this->target_temperature, this->minimum_temperature_, this->maximum_temperature_));
   code.temperature = temp - 15;
-  ESP_LOGD(TAG, "encoded electra code: %lld", code.num);
+
+  ESP_LOGD(TAG, "Encoded Electra code: 0x%09llX (%llu)", (unsigned long long) code.num,
+           (unsigned long long) code.num);
   return code;
 }
 
-bool ElectraClimate::on_receive(remote_base::RemoteReceiveData data){
+bool ElectraClimate::on_receive(remote_base::RemoteReceiveData data) {
   if (millis() - this->last_transmit_time_ < 500) {
-    ESP_LOGV(TAG, "Blocked receive because of current trasmittion");
+    ESP_LOGV(TAG, "Blocked receive because of recent transmission");
     return false;
   }
   data.set_tolerance((ELECTRA_TIME_UNIT / 2), esphome::remote_base::TOLERANCE_MODE_TIME);
-  ElectraCode decode;
-  decode = analyze_electra(data);
+  ElectraCode decode = analyze_electra(data);
 
-  if (decode.num == 0) return false;
+  if (decode.num == 0)
+    return false;
 
-  if ((decode.power) == 1 && (this->mode != climate::CLIMATE_MODE_OFF)){ // if this is a power command, and the state is not off, turn off.
+  // Ignore periodic iFeel telemetry beacons so they do not overwrite user setpoints
+  if (decode.ifeel_oriented == 1) {
+    ESP_LOGD(TAG, "Received Electra iFeel beacon (room temp: %u°C)", (unsigned) (decode.temperature + 15));
+    return true;
+  }
+
+  // Check if this is an explicit OFF or power-off toggle
+  if (decode.mode == IRElectraMode::IRElectraModeOff ||
+      (decode.power == 1 && this->mode != climate::CLIMATE_MODE_OFF)) {
     this->mode = climate::CLIMATE_MODE_OFF;
-  }
-  else if ((decode.power != 1 ) && (this->mode == climate::CLIMATE_MODE_OFF)){ // if there is a state change while the ac is off
-    ESP_LOGD(TAG, "An change mode command was recived, but the ac is off");
-  }
-  else { // else, set the correct mode
-    switch (decode.mode) {// changes the mode to the received one
+  } else if (decode.power == 1 && this->mode == climate::CLIMATE_MODE_OFF) {
+    // Power turned ON from physical remote
+    switch (decode.mode) {
       case IRElectraMode::IRElectraModeCool:
         this->mode = climate::CLIMATE_MODE_COOL;
         break;
@@ -212,10 +216,37 @@ bool ElectraClimate::on_receive(remote_base::RemoteReceiveData data){
       case IRElectraMode::IRElectraModeDry:
         this->mode = climate::CLIMATE_MODE_DRY;
         break;
+      default:
+        this->mode = climate::CLIMATE_MODE_COOL;
+        break;
     }
+  } else if (decode.power == 0 && this->mode != climate::CLIMATE_MODE_OFF) {
+    // Mode changed while AC is on
+    switch (decode.mode) {
+      case IRElectraMode::IRElectraModeCool:
+        this->mode = climate::CLIMATE_MODE_COOL;
+        break;
+      case IRElectraMode::IRElectraModeHeat:
+        this->mode = climate::CLIMATE_MODE_HEAT;
+        break;
+      case IRElectraMode::IRElectraModeFan:
+        this->mode = climate::CLIMATE_MODE_FAN_ONLY;
+        break;
+      case IRElectraMode::IRElectraModeAuto:
+        this->mode = climate::CLIMATE_MODE_HEAT_COOL;
+        break;
+      case IRElectraMode::IRElectraModeDry:
+        this->mode = climate::CLIMATE_MODE_DRY;
+        break;
+      default:
+        break;
+    }
+  } else {
+    ESP_LOGD(TAG, "Mode change received while AC is off");
   }
 
-  switch (decode.fan) {// changes the fan to the received one
+  // Fan mode
+  switch (decode.fan) {
     case IRElectraFan::IRElectraFanLow:
       this->fan_mode = climate::CLIMATE_FAN_LOW;
       break;
@@ -230,129 +261,125 @@ bool ElectraClimate::on_receive(remote_base::RemoteReceiveData data){
       break;
   }
 
-  if (decode.swing == 1){ // swing
+  // Swing mode
+  if (decode.swing == 1) {
     this->swing_mode = climate::CLIMATE_SWING_VERTICAL;
   } else {
     this->swing_mode = climate::CLIMATE_SWING_OFF;
   }
 
-  if (decode.sleep == 1)
-  {
+  // Preset
+  if (decode.sleep == 1) {
     this->preset = climate::CLIMATE_PRESET_SLEEP;
   } else {
     this->preset = climate::CLIMATE_PRESET_NONE;
   }
-  
 
-  this->target_temperature = (decode.temperature + 15); // temp
+  // Target temperature
+  this->target_temperature = (decode.temperature + 15);
 
-  active_mode_ = this->mode; // keep the active mode in sync
-  this->publish_state(); // update HA
+  if (this->mode != climate::CLIMATE_MODE_OFF) {
+    this->last_on_mode_ = this->mode;
+  }
+  this->active_mode_ = this->mode;
+  this->publish_state();
   return true;
-
 }
-// all fuanction from here down are helper fuanctions for decoding,
 
-ElectraCode ElectraClimate::decode_electra(remote_base::RemoteReceiveData data){ // this function recives a mark header-less data(the header space is not stript away, it can be 1 of 2 things) and decodes it.
+ElectraCode ElectraClimate::decode_electra(remote_base::RemoteReceiveData data) {
+  const size_t total_bits = ELECTRA_NUM_BITS * 2;
+  // Safety margin prevents out-of-bounds writes on edge conditions
+  bool bits[total_bits + 4]{};
+  ElectraCode decode = {0};
+  bool longheader = false;
 
-  bool bits[ELECTRA_NUM_BITS*2]; // a list of all bits tranlstaed, Mark -> 0 Space -> 1
-  ElectraCode decode = { 0 }; // reset the Electra code union
-  bool longheader = false; // if the command is a turn on/off the first bit is 1, that means space -> mark, but the header also ends with space, so there is a "long header"
-
-  if (data.expect_space(ELECTRA_TIME_UNIT *4)){ // handles long header 
+  if (data.expect_space(ELECTRA_TIME_UNIT * 4)) {
     longheader = true;
-  } else data.advance();
+  } else {
+    data.advance();
+  }
 
-
-  for (size_t i = 0; i < (2*ELECTRA_NUM_BITS);){ // this fuanction make a 68 bit list of true or false based on the raw input
-    if(longheader && data.peek_mark(ELECTRA_TIME_UNIT*2)){
+  for (size_t i = 0; i < total_bits;) {
+    if (longheader && data.peek_mark(ELECTRA_TIME_UNIT * 2)) {
       longheader = false;
       bits[i] = true;
       bits[i + 1] = false;
       bits[i + 2] = false;
       i += 3;
-    }
-    else if (longheader && (data.peek_mark(ELECTRA_TIME_UNIT) || data.peek_mark(ELECTRA_TIME_UNIT - 400))){
+    } else if (longheader && (data.peek_mark(ELECTRA_TIME_UNIT) || data.peek_mark(ELECTRA_TIME_UNIT - 400))) {
       longheader = false;
       bits[i] = true;
       bits[i + 1] = false;
       i += 2;
-    }
-    else if (data.peek_mark(ELECTRA_TIME_UNIT) || data.peek_mark(ELECTRA_TIME_UNIT - 400)){ 
+    } else if (data.peek_mark(ELECTRA_TIME_UNIT) || data.peek_mark(ELECTRA_TIME_UNIT - 400)) {
       bits[i] = false;
       i++;
-    }
-    else if (data.peek_space(ELECTRA_TIME_UNIT) || data.peek_space(ELECTRA_TIME_UNIT - 400)){
+    } else if (data.peek_space(ELECTRA_TIME_UNIT) || data.peek_space(ELECTRA_TIME_UNIT - 400)) {
       bits[i] = true;
       i++;
-    } 
-    else if (data.peek_mark(ELECTRA_TIME_UNIT*2)){
+    } else if (data.peek_mark(ELECTRA_TIME_UNIT * 2)) {
       bits[i] = false;
       bits[i + 1] = false;
       i += 2;
-    }
-    else if (data.peek_space(ELECTRA_TIME_UNIT*2)){
+    } else if (data.peek_space(ELECTRA_TIME_UNIT * 2)) {
       bits[i] = true;
       bits[i + 1] = true;
       i += 2;
+    } else {
+      ESP_LOGV(TAG, "Bit duration error at bit %zu", i);
+      return {0};
     }
-    else{
-      ESP_LOGV(TAG, "bit duration error,at bit %zu", i);
-      return { 0 };
-    }
-    data.advance(); // moves to next bit
+    data.advance();
   }
 
-  for (size_t i = 0; i < (ELECTRA_NUM_BITS); i++){
-    if (bits[i * 2] && !bits[i * 2 + 1]){
-      decode.num |= (1ULL << ((ELECTRA_NUM_BITS -1) -i));
+  for (size_t i = 0; i < ELECTRA_NUM_BITS; i++) {
+    if (bits[i * 2] && !bits[i * 2 + 1]) {
+      decode.num |= (1ULL << ((ELECTRA_NUM_BITS - 1) - i));
+    } else if (!bits[i * 2] && bits[i * 2 + 1]) {
+      decode.num &= ~(1ULL << ((ELECTRA_NUM_BITS - 1) - i));
+    } else {
+      ESP_LOGV(TAG, "Not Manchester coded at bit %zu", i);
+      return {0};
     }
-    else if (!bits[i * 2] && bits[i * 2 + 1]){
-      decode.num &= ~(1ULL << ((ELECTRA_NUM_BITS -1) -i));
-    }
-    else {
-      ESP_LOGV(TAG, "not manchester coded");
-      return  { 0 };
-    }
-  } // munchster tranlation, every 2 bits are migrated into 1, if its 10 -> 1, if 01 -> 0, if 00 or 11, this is an error.
+  }
 
-  ESP_LOGD(TAG, "decoded code: %lld", decode.num);
+  ESP_LOGD(TAG, "Decoded Electra code: 0x%09llX (%llu)", (unsigned long long) decode.num,
+           (unsigned long long) decode.num);
 
-  if ((decode.ones1 != 1) || (decode.zeros1 != 0) || (decode.zeros2 != 0) || (decode.zeros3 != 0)){
-    ESP_LOGV(TAG, "decoded successfully, but data got courpted");
-    return { 0 };
-  } // make sure the decoded code falls within electra expectations
+  if ((decode.ones1 != 1) || (decode.zeros1 != 0) || (decode.zeros2 != 0) || (decode.zeros3 != 0)) {
+    ESP_LOGV(TAG, "Decoded successfully, but structure corrupted");
+    return {0};
+  }
 
   return decode;
 }
 
-ElectraCode ElectraClimate::analyze_electra(remote_base::RemoteReceiveData &data){ // this function founds electra headers, strips them away, and give them to the decode electra
-  ElectraCode decode = { 0 };
+ElectraCode ElectraClimate::analyze_electra(remote_base::RemoteReceiveData &data) {
+  ElectraCode decode = {0};
   int attempts = 0;
   int runs;
-  while (attempts < 3){
-    for (runs = 0 ;
-    ((!(data.peek_space(ELECTRA_TIME_UNIT*3) || data.peek_space(ELECTRA_TIME_UNIT*4)))) // checks for any header spaces, if found, end the loop
-     && runs < (3*ELECTRA_NUM_BITS); runs ++){ // if the loop went over the loop limit, stop searching
+  while (attempts < 3) {
+    for (runs = 0;
+         (!data.peek_space(ELECTRA_TIME_UNIT * 3) && !data.peek_space(ELECTRA_TIME_UNIT * 4)) &&
+         runs < (3 * ELECTRA_NUM_BITS);
+         runs++) {
       data.advance();
-    } //only checks for the space, often times the mark gets lost in trasmission
-    if (runs >= (3*ELECTRA_NUM_BITS)){
-      ESP_LOGV(TAG, "no headers found" );
-      return { 0 };
+    }
+    if (runs >= (3 * ELECTRA_NUM_BITS)) {
+      ESP_LOGV(TAG, "No headers found");
+      return {0};
     }
     decode = decode_electra(data);
-    if (decode.num != 0){
+    if (decode.num != 0) {
       return decode;
     }
-    ESP_LOGV(TAG, "failed to decode, trying again" );
+    ESP_LOGV(TAG, "Failed to decode, trying again");
     data.advance();
     attempts++;
   }
-  ESP_LOGV(TAG, "decoding failed 3 times, stops trying" );
-  return { 0 };
-  
+  ESP_LOGV(TAG, "Decoding failed 3 times, stops trying");
+  return {0};
 }
-// end of decoding area
 
-} // name space electra
-}// namespace esphome
+}  // namespace electra
+}  // namespace esphome
