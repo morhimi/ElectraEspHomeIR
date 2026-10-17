@@ -1,43 +1,60 @@
 esphome:
-  name: YourDevcieName
-  friendly_name: Your Devcie Name
+  name: electra-ac
+  friendly_name: Electra AC
 
-external_components:
-  - source:
-      type: git
-      url: https://github.com/omersht/ElectraEspHome
-      ref: main
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
 
+# Expose state sync action to Home Assistant
 api:
   actions:
     - action: sync_electra_state
       then:
-        - lambda: |-
-            id(someid).sync_state();
+        - electra.sync_state: electra_ac
 
+ota:
+  - platform: esphome
+
+wifi:
+  ssid: "Your_WiFi_SSID"
+  password: "Your_WiFi_Password"
+
+logger:
+
+external_components:
+  - source:
+      type: git
+      url: https://github.com/omerstr/ElectraEspHomeIR
+      ref: main
+
+# Optional: external ambient temperature sensor (e.g. from Home Assistant or local sensor)
 sensor:
-  - platform: tempsensor
-    name: "Temperature"
-    id: temp
+  - platform: homeassistant
+    id: room_temperature
+    entity_id: sensor.living_room_temperature
 
 remote_transmitter:
- pin: (your pin)
- carrier_duty_percent: 50%  #test with different values to see what works best
- id: ir_transmitter
+  pin: GPIO4
+  carrier_duty_percent: 50%
+  id: ir_transmitter
 
- remote_receiver:
-  pin: 
-    number: (your pin)
-    inverted: True(or False, try both to see what works)
-    mode: INPUT_PULLUP
+remote_receiver:
+  pin:
+    number: GPIO5
+    inverted: true
+    mode:
+      input: true
+      pullup: true
+  tolerance: 50%
   id: ir_receiver
 
- climate:
+climate:
   - platform: electra
-    name: (your name)
-    id: someid
+    name: "Living Room AC"
+    id: electra_ac
     transmitter_id: ir_transmitter
     receiver_id: ir_receiver
-    supports_off_command: True
-    sensor: temp
-    # all options suported in IR Remote Climate are suported
+    supports_off_command: true
+    sensor: room_temperature

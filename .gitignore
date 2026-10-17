@@ -1,0 +1,17 @@
+# ESPHome
+.esphome/
+*.bin
+*.elf
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# IDE & OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
