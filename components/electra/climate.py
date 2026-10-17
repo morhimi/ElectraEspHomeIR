@@ -1,3 +1,5 @@
+import inspect
+
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome import automation
@@ -25,6 +27,11 @@ async def to_code(config):
     cg.add(var.set_supports_off_command(config[CONF_SUPPORTS_OFF_COMMAND]))
 
 
+# ESPHome 2026.3+ requires explicit synchronous= parameter for register_action
+_register_action_kwargs = {}
+if "synchronous" in inspect.signature(automation.register_action).parameters:
+    _register_action_kwargs["synchronous"] = True
+
 @automation.register_action(
     "electra.sync_state",
     SyncStateAction,
@@ -33,6 +40,7 @@ async def to_code(config):
             cv.Required(CONF_ID): cv.use_id(ElectraClimate),
         }
     ),
+    **_register_action_kwargs,
 )
 async def electra_sync_state_to_code(config, action_id, template_arg, args):
     paren = await cg.get_variable(config[CONF_ID])
